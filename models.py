@@ -1,10 +1,3 @@
-"""
-models.py - The data structures for our job scraper.
-
-Think of this as defining what a "job" looks like as data.
-We use a dataclass (a simple class that just holds data) to represent each job posting.
-"""
-
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
@@ -13,22 +6,17 @@ from unittest import result
 
 @dataclass
 class JobPost:
-    """
-    Represents a single job posting.
-    Each field corresponds to a piece of info we scrape from the job board.
+    #Each field corresponds to a piece of info we scrape from the job board.
+    #@dataclass automatically generates __init__, __repr__, etc. for us.
     
-    @dataclass automatically generates __init__, __repr__, etc. for us.
-    Optional[str] means the field can be a string OR None (if we couldn't find it).
-    """
-    
-    # Required fields (we always try to get these)
+    # Required fields
     title: str                     
     company: str              
     location: str                 
     job_url: str                   
     source: str                    
     
-    # ── Optional fields (nice to have, not always available) ─
+    #Optional[str] means the field can be a string or none
     description: Optional[str] = None       
     job_type: Optional[str] = None          
     is_remote: Optional[bool] = None        
@@ -38,7 +26,7 @@ class JobPost:
     salary_interval: Optional[str] = None   
     
     def to_dict(self) -> dict:
-        """Convert this job post into a plain dictionary (useful for CSV/JSON export)."""
+        #Convert this job post into a plain dictionary 
         return {
             "title": self.title,
             "company": self.company,

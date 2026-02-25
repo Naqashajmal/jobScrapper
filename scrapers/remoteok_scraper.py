@@ -5,6 +5,7 @@ import zlib
 import time
 import random
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+#"hey Python, also look in the parent folder for imports"
 
 from typing import List, Optional
 import requests
