@@ -1,7 +1,3 @@
-"""
-remoteok_scraper.py - Scraper for RemoteOK.com
-"""
-
 import sys
 import os
 import json
