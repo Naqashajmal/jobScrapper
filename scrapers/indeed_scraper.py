@@ -8,11 +8,9 @@ from typing import List, Optional
 import requests
 from models import JobPost
 from scrapers.base_scraper import BaseScraper
-
-
-# Your RapidAPI key
-RAPIDAPI_KEY = "a83f70549cmsh7a356a88395d843p11811ejsn2dec29b65829"
-
+from dotenv import load_dotenv
+load_dotenv()
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY") # Your RapidAPI key
 
 class IndeedScraper(BaseScraper):
 
