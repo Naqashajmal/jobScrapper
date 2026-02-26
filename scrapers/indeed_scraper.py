@@ -1,136 +1,112 @@
-#Scraper for Indeed.com via JSearch API on RapidAPI
-
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from typing import List, Optional
 import requests
+from typing import List, Optional
 from models import JobPost
 from scrapers.base_scraper import BaseScraper
 from dotenv import load_dotenv
+
 load_dotenv()
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY") # Your RapidAPI key
+
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+API_URL = "https://jsearch.p.rapidapi.com/search"
+API_HEADERS = {
+    "x-rapidapi-key": RAPIDAPI_KEY,
+    "x-rapidapi-host": "jsearch.p.rapidapi.com",
+}
+JOB_TYPE_MAP = {
+    "fulltime":   "fulltime",
+    "full_time":  "fulltime",
+    "parttime":   "parttime",
+    "part_time":  "parttime",
+    "contractor": "contract",
+    "intern":     "internship",
+}
+
 
 class IndeedScraper(BaseScraper):
-
-    API_URL = "https://jsearch.p.rapidapi.com/search"
 
     @property
     def site_name(self) -> str:
         return "indeed"
 
+    # ── Main entry point ──────────────────────────────────────────────────────
+
     def scrape(self, search_term: str, location: str, results_wanted: int = 20) -> List[JobPost]:
-        self.logger.info(f"Searching Indeed (via JSearch) for '{search_term}' in '{location}'")
+        self.logger.info(f"Searching Indeed for '{search_term}' in '{location}'")
 
         jobs = []
         page = 1
 
         while len(jobs) < results_wanted:
-            page_jobs = self._scrape_page(search_term, location, page)
+            page_jobs = self._fetch_page(search_term, location, page)
             if not page_jobs:
                 break
             jobs.extend(page_jobs)
-            self.logger.info(f"Found {len(jobs)} Indeed jobs so far...")
             page += 1
 
+        self.logger.info(f"Found {len(jobs)} Indeed jobs")
         return jobs[:results_wanted]
 
-    def _scrape_page(self, search_term: str, location: str, page: int) -> List[JobPost]:
-        # Build headers exactly as RapidAPI expects
-        headers = {
-            "x-rapidapi-key": RAPIDAPI_KEY,
-            "x-rapidapi-host": "jsearch.p.rapidapi.com",
-            "Content-Type": "application/json",
-        }
+    # ── Fetching ──────────────────────────────────────────────────────────────
 
+    def _fetch_page(self, search_term: str, location: str, page: int) -> List[JobPost]:
         params = {
             "query": f"{search_term} {location}",
             "page": str(page),
             "num_pages": "1",
-            "country": "us",
             "date_posted": "all",
         }
 
         try:
-            # Make request directly without using our base class
-            # to have full control over headers
-            response = requests.get(
-                self.API_URL,
-                headers=headers,
-                params=params,
-                timeout=20,
-            )
-            self.logger.info(f"JSearch status: {response.status_code}")
-
-            if response.status_code == 403:
-                self.logger.error("403 Forbidden — check your API key is correct and subscribed")
-                self.logger.error(f"Response: {response.text[:300]}")
-                return []
-
+            response = requests.get(API_URL, headers=API_HEADERS, params=params, timeout=20)
             response.raise_for_status()
-            data = response.json()
+            results = response.json().get("data", [])
+            self.logger.info(f"Page {page}: got {len(results)} results")
+            return self._parse_all(results)
 
         except Exception as e:
-            self.logger.error(f"JSearch API error: {e}")
+            self.logger.error(f"Failed to fetch page {page}: {e}")
             return []
 
-        results = data.get("data", [])
-        self.logger.info(f"JSearch returned {len(results)} results for page {page}")
+    # ── Parsing ───────────────────────────────────────────────────────────────
 
+    def _parse_all(self, results: list) -> List[JobPost]:
         jobs = []
         for item in results:
-            job = self._parse_job(item)
+            job = self._parse_one(item)
             if job:
                 jobs.append(job)
-
         return jobs
 
-    def _parse_job(self, data: dict) -> Optional[JobPost]:
+    def _parse_one(self, data: dict) -> Optional[JobPost]:
         try:
-            title = data.get("job_title", "Unknown")
-            company = data.get("employer_name", "Unknown")
-
-            city = data.get("job_city", "")
-            state = data.get("job_state", "")
-            country = data.get("job_country", "")
-            location = ", ".join(filter(None, [city, state, country])) or "Unknown"
-
-            job_url = data.get("job_apply_link") or data.get("job_url") or "https://www.indeed.com"
-            is_remote = data.get("job_is_remote", False)
-            date_posted = data.get("job_posted_at_datetime_utc", None)
-            description = (data.get("job_description") or "")[:500]
-
-            salary_min = data.get("job_min_salary")
-            salary_max = data.get("job_max_salary")
-            salary_interval = (data.get("job_salary_period") or "").lower() or None
-
-            job_type_raw = (data.get("job_employment_type") or "").lower()
-            job_type_map = {
-                "fulltime": "fulltime",
-                "full_time": "fulltime",
-                "parttime": "parttime",
-                "part_time": "parttime",
-                "contractor": "contract",
-                "intern": "internship",
-            }
-            job_type = job_type_map.get(job_type_raw, job_type_raw or None)
-
             return JobPost(
-                title=title,
-                company=company,
-                location=location,
-                job_url=job_url,
+                title=data.get("job_title", "Unknown"),
+                company=data.get("employer_name", "Unknown"),
+                location=self._build_location(data),
+                job_url=data.get("job_apply_link") or data.get("job_url") or "https://www.indeed.com",
                 source=self.site_name,
-                description=description,
-                job_type=job_type,
-                is_remote=is_remote,
-                date_posted=date_posted,
-                salary_min=float(salary_min) if salary_min else None,
-                salary_max=float(salary_max) if salary_max else None,
-                salary_interval=salary_interval,
+                is_remote=data.get("job_is_remote", False),
+                date_posted=data.get("job_posted_at_datetime_utc"),
+                description=(data.get("job_description") or "")[:500],
+                job_type=self._get_job_type(data),
+                salary_min=float(data["job_min_salary"]) if data.get("job_min_salary") else None,
+                salary_max=float(data["job_max_salary"]) if data.get("job_max_salary") else None,
+                salary_interval=(data.get("job_salary_period") or "").lower() or None,
             )
-
         except Exception as e:
-            self.logger.debug(f"Failed to parse JSearch job: {e}")
+            self.logger.debug(f"Skipped a job: {e}")
             return None
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _build_location(self, data: dict) -> str:
+        parts = [data.get("job_city"), data.get("job_state"), data.get("job_country")]
+        return ", ".join(filter(None, parts)) or "Unknown"
+
+    def _get_job_type(self, data: dict) -> Optional[str]:
+        raw = (data.get("job_employment_type") or "").lower()
+        return JOB_TYPE_MAP.get(raw, raw or None)

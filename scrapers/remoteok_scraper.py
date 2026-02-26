@@ -1,195 +1,129 @@
 import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import json
-import zlib
 import time
 import random
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-#"hey Python, also look in the parent folder for imports"
-
-from typing import List, Optional
 import requests
+from typing import List, Optional
 from models import JobPost
 from scrapers.base_scraper import BaseScraper
 
 
 class RemoteOKScraper(BaseScraper):
-    
+
     API_URL = "https://remoteok.com/api"
 
     def __init__(self):
-        super().__init__(delay_between_requests=2.0)
-
-    def _decompress(self, content: bytes) -> Optional[str]:
-        """Try every possible decompression method."""
-        
-        # Method 1: brotli (br) — most likely what RemoteOK uses
-        try:
-            import brotli
-            return brotli.decompress(content).decode("utf-8")
-        except Exception:
-            pass
-
-        # Method 2: gzip
-        try:
-            return zlib.decompress(content, zlib.MAX_WBITS | 16).decode("utf-8")
-        except Exception:
-            pass
-
-        # Method 3: zlib
-        try:
-            return zlib.decompress(content).decode("utf-8")
-        except Exception:
-            pass
-
-        # Method 4: deflate
-        try:
-            return zlib.decompress(content, -zlib.MAX_WBITS).decode("utf-8")
-        except Exception:
-            pass
-
-        # Method 5: raw utf-8
-        try:
-            return content.decode("utf-8")
-        except Exception:
-            pass
-
-        return None
-
-    def _fetch_all_jobs(self) -> Optional[list]:
-        session = requests.Session()
-
-        # Step 1: Visit homepage first like a real browser
-        try:
-            session.get("https://remoteok.com/", timeout=10, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate",  # No brotli for homepage
-            })
-            self.logger.info("Homepage visited successfully")
-        except Exception as e:
-            self.logger.warning(f"Homepage visit failed (continuing anyway): {e}")
-
-        time.sleep(random.uniform(2, 4))
-
-        # Step 2: Fetch the API — explicitly say we DON'T want brotli
-        # so we get gzip which we can handle with zlib
-        try:
-            response = session.get(
-                self.API_URL,
-                timeout=15,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Accept-Encoding": "gzip, deflate",  # No brotli — we can't handle it without extra lib
-                    "Referer": "https://remoteok.com/",
-                    "Connection": "keep-alive",
-                },
-                # Tell requests NOT to auto-decompress so we can do it manually
-                stream=False,
-            )
-
-            self.logger.info(f"Status: {response.status_code} | Encoding: {response.headers.get('Content-Encoding', 'none')} | Type: {response.headers.get('Content-Type', '?')}")
-
-            # Let requests handle decompression automatically first
-            # (it does gzip automatically when you access response.text)
-            text = response.text
-            self.logger.info(f"Response text preview: {text[:100]}")
-
-            if text.strip().startswith("[") or text.strip().startswith("{"):
-                # Looks like valid JSON!
-                data = json.loads(text)
-                self.logger.info(f"Got {len(data)} items from API")
-                return data
-            else:
-                # Not JSON — try manual decompression on raw bytes
-                self.logger.warning("response.text not JSON, trying manual decompression...")
-                decoded = self._decompress(response.content)
-                if decoded:
-                    self.logger.info(f"Manual decompress preview: {decoded[:100]}")
-                    data = json.loads(decoded)
-                    self.logger.info(f"Got {len(data)} items after manual decompress")
-                    return data
-                else:
-                    self.logger.error("All decompression methods failed")
-                    self.logger.error(f"Raw content (hex): {response.content[:50].hex()}")
-                    return None
-
-        except Exception as e:
-            self.logger.error(f"Request failed: {e}")
-            return None
+        super().__init__(delay=2.0)
 
     @property
     def site_name(self) -> str:
         return "remoteok"
 
+    # ── Main entry point ──────────────────────────────────────────────────────
+
     def scrape(self, search_term: str, location: str = "remote", results_wanted: int = 20) -> List[JobPost]:
         self.logger.info(f"Searching RemoteOK for '{search_term}'")
 
-        data = self._fetch_all_jobs()
-        if not data:
+        all_jobs = self._fetch_jobs()
+        if not all_jobs:
             return []
 
-        jobs_data = data[1:] if data else []
-        self.logger.info(f"Total jobs available: {len(jobs_data)}")
+        matched = self._filter_jobs(all_jobs, search_term, results_wanted)
+        return self._parse_all(matched)
 
-        # Filter by search term locally
-        search_lower = search_term.lower()
+    # ── Fetching ──────────────────────────────────────────────────────────────
+
+    def _fetch_jobs(self) -> Optional[list]:
+        self._visit_homepage()
+        time.sleep(random.uniform(2, 4))
+        return self._call_api()
+
+    def _visit_homepage(self):
+        try:
+            requests.get(
+                "https://remoteok.com/",
+                timeout=10,
+                headers={
+                    "User-Agent": self.session.headers["User-Agent"],
+                    "Accept-Encoding": "gzip, deflate",
+                }
+            )
+            self.logger.info("Homepage visited")
+        except Exception:
+            self.logger.warning("Homepage visit failed, continuing anyway")
+
+    def _call_api(self) -> Optional[list]:
+        try:
+            response = self.session.get(
+                self.API_URL,
+                timeout=15,
+                headers={
+                    "Accept": "application/json",
+                    "Accept-Encoding": "gzip, deflate",
+                    "Referer": "https://remoteok.com/",
+                }
+            )
+
+            data = json.loads(response.text)
+            self.logger.info(f"Got {len(data)} items from API")
+            return data
+
+        except Exception as e:
+            self.logger.error(f"API call failed: {e}")
+            return None
+
+    # ── Filtering ─────────────────────────────────────────────────────────────
+
+    def _filter_jobs(self, all_jobs: list, search_term: str, limit: int) -> list:
+        search_words = search_term.lower().split()
         matched = []
-        for job_data in jobs_data:
-            title = str(job_data.get("position", "")).lower()
-            tags = " ".join(job_data.get("tags", [])).lower()
 
-            if any(word in title or word in tags for word in search_lower.split()):
-                matched.append(job_data)
+        for job in all_jobs[1:]:  # skip first item, it's metadata not a job
+            title = str(job.get("position", "")).lower()
+            tags = " ".join(job.get("tags", [])).lower()
 
-            if len(matched) >= results_wanted:
+            if any(word in title or word in tags for word in search_words):
+                matched.append(job)
+
+            if len(matched) >= limit:
                 break
 
-        self.logger.info(f"Matched {len(matched)} jobs for '{search_term}'")
+        self.logger.info(f"Matched {len(matched)} jobs")
+        return matched
 
+    # ── Parsing ───────────────────────────────────────────────────────────────
+
+    def _parse_all(self, jobs_data: list) -> List[JobPost]:
         jobs = []
-        for job_data in matched:
-            job = self._parse_job(job_data)
+        for job_data in jobs_data:
+            job = self._parse_one(job_data)
             if job:
                 jobs.append(job)
-
-        self.logger.info(f"Found {len(jobs)} RemoteOK jobs")
+        self.logger.info(f"Parsed {len(jobs)} jobs")
         return jobs
 
-    def _parse_job(self, data: dict) -> Optional[JobPost]:
+    def _parse_one(self, data: dict) -> Optional[JobPost]:
         try:
             if not data.get("position"):
                 return None
 
-            title = data.get("position", "Unknown")
-            company = data.get("company", "Unknown")
-            job_url = data.get("url", "https://remoteok.com")
-
-            salary_min = data.get("salary_min")
-            salary_max = data.get("salary_max")
-
-            if salary_min:
-                salary_min = float(salary_min)
-            if salary_max:
-                salary_max = float(salary_max)
-
             return JobPost(
-                title=title,
-                company=company,
+                title=data.get("position", "Unknown"),
+                company=data.get("company", "Unknown"),
                 location="Remote",
-                job_url=job_url,
+                job_url=data.get("url", self.API_URL),
                 source=self.site_name,
                 is_remote=True,
-                salary_min=salary_min,
-                salary_max=salary_max,
-                salary_interval="yearly" if salary_min else None,
+                salary_min=float(data["salary_min"]) if data.get("salary_min") else None,
+                salary_max=float(data["salary_max"]) if data.get("salary_max") else None,
+                salary_interval="yearly" if data.get("salary_min") else None,
                 date_posted=data.get("date"),
                 description=data.get("description", "")[:500] if data.get("description") else None,
             )
 
         except Exception as e:
-            self.logger.debug(f"Failed to parse RemoteOK job: {e}")
+            self.logger.debug(f"Skipped a job: {e}")
             return None
